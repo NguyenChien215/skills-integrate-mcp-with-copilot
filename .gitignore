@@ -18,6 +18,10 @@
 *.jar
 *.rar
 *.tar
+
+# Sensitive credentials #
+#########################
+src/teachers.json
 *.zip
 
 # Logs and databases #
