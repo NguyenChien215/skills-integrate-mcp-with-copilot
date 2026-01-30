@@ -5,11 +5,14 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from typing import Optional
 import os
+import json
 from pathlib import Path
+import secrets
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -18,6 +21,18 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+# Load teachers from JSON file
+def load_teachers():
+    teachers_file = os.path.join(Path(__file__).parent, "teachers.json")
+    with open(teachers_file, 'r') as f:
+        data = json.load(f)
+        return {teacher['username']: teacher['password'] for teacher in data['teachers']}
+
+teachers = load_teachers()
+
+# Session storage (in production, use a proper session store)
+active_sessions = {}
 
 # In-memory activity database
 activities = {
@@ -88,9 +103,53 @@ def get_activities():
     return activities
 
 
+@app.post("/login")
+def login(username: str, password: str):
+    """Authenticate a teacher and return a session token"""
+    if username in teachers and teachers[username] == password:
+        # Generate a session token
+        token = secrets.token_urlsafe(32)
+        active_sessions[token] = username
+        return {"token": token, "username": username}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+@app.post("/logout")
+def logout(authorization: Optional[str] = Header(None)):
+    """Logout a teacher"""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        if token in active_sessions:
+            del active_sessions[token]
+            return {"message": "Logged out successfully"}
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+@app.get("/verify")
+def verify_session(authorization: Optional[str] = Header(None)):
+    """Verify if the current session is valid"""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        if token in active_sessions:
+            return {"authenticated": True, "username": active_sessions[token]}
+    return {"authenticated": False}
+
+
+def verify_teacher(authorization: Optional[str] = Header(None)):
+    """Dependency to verify teacher authentication"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    token = authorization[7:]
+    if token not in active_sessions:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    
+    return active_sessions[token]
+
+
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, teacher: str = Depends(verify_teacher)):
+    """Sign up a student for an activity (requires teacher authentication)"""
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -111,8 +170,8 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, teacher: str = Depends(verify_teacher)):
+    """Unregister a student from an activity (requires teacher authentication)"""
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
